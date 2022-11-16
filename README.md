@@ -1,2 +1,2 @@
 # Computer-Network
-Computer network homework (NKU, Fall 2022)
+Course assignment of Computer Network (NKU, Autumn 2022)
