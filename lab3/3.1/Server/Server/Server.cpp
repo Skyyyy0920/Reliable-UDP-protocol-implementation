@@ -2,6 +2,7 @@
 
 #define SERVER_IP "127.0.0.1"  // 服务器IP地址 
 #define SERVER_PORT 920  // 服务器端口号
+#define PACKET_LENGTH 1024
 #define BUFFER_SIZE sizeof(Packet)  // 缓冲区大小
 
 SOCKADDR_IN socketAddr;  // 服务器地址
@@ -9,7 +10,7 @@ SOCKADDR_IN addrClient;  // 客户端地址
 SOCKET socketServer;  // 服务器套接字
 
 stringstream ss;
-SYSTEMTIME sysTime = { 0 };  // 系统时间
+SYSTEMTIME sysTime = { 0 };
 void printTime() {  // 打印系统时间
 	ss.clear();
 	ss.str("");
@@ -18,14 +19,33 @@ void printTime() {  // 打印系统时间
 	cout << ss.str();
 }
 
+void printPacketMessage(Packet* pkt) {  // 打印数据包信息 
+	cout << "Packet size=" << pkt->len << " Bytes!  FLAG=" << pkt->FLAG;
+	cout << " seqNumber=" << pkt->seq << " ackNumber=" << pkt->ack;
+	cout << " checksum=" << pkt->checksum << " windowLength=" << pkt->window << endl;
+}
+
+void printSendPacketMessage(Packet* pkt) {
+	cout << "[Send Packet's information]";
+	printPacketMessage(pkt);
+}
+
+void printReceivePacketMessage(Packet* pkt) {
+	cout << "[Receive Packet's information]";
+	printPacketMessage(pkt);
+}
+
 int fromLen = sizeof(SOCKADDR);
 int waitSeq;  // 等待的数据包序列号
 int err;  // socket错误提示
 int packetNum;  // 发送数据包的数量
 int fileSize;  // 文件大小
 unsigned int recvSize;  // 累积收到的文件位置
-char* filePath;
+char* fileName;
 char* fileBuffer;
+
+default_random_engine randomEngine;
+uniform_real_distribution<float> randomNumber(0.0, 1.0);  // 自己设置丢包
 
 void initSocket() {
 	WSADATA wsaData;  // 存储被WSAStartup函数调用后返回的Windows Sockets数据  
@@ -86,7 +106,7 @@ void connect() {
 		switch (state) {
 		case 0:  // 等待客户端发送数据包状态
 			err = recvfrom(socketServer, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &fromLen);
-			if (err >= 0) {
+			if (err > 0) {
 				if (recvPkt->FLAG & 0x2) {  // SYN=1
 					printTime();
 					cout << "收到来自客户端的建连请求，开始第二次握手，向客户端发送ACK,SYN=1的数据包..." << endl;
@@ -105,7 +125,7 @@ void connect() {
 
 		case 1:  // 接收客户端的ACK=1数据包
 			err = recvfrom(socketServer, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &fromLen);
-			if (err >= 0) {
+			if (err > 0) {
 				if (recvPkt->FLAG & 0x4) {  // ACK=1
 					printTime();
 					cout << "收到来自客户端第三次握手ACK数据包..." << endl;
@@ -148,9 +168,6 @@ void disconnect() {  // 参考 <https://blog.csdn.net/LOOKTOMMER/article/details/1
 			// 第二次挥手，向客户端发送ACK=1的数据包
 			sendPkt->setACK();
 			sendto(socketServer, (char*)sendPkt, BUFFER_SIZE, 0, (SOCKADDR*)&socketAddr, sizeof(SOCKADDR));
-			cout << "Send Message " << sendPkt->len << " Bytes!";
-			cout << " Flag:" << sendPkt->FLAG << " SEQ:" << sendPkt->seq;
-			cout << " checksum:" << sendPkt->checksum << endl;
 
 			state = 1;  // 转状态1
 			break;
@@ -162,16 +179,13 @@ void disconnect() {  // 参考 <https://blog.csdn.net/LOOKTOMMER/article/details/1
 			// 第三次挥手，向客户端发送FIN,ACK=1的数据包
 			sendPkt->setFINACK();
 			sendto(socketServer, (char*)sendPkt, BUFFER_SIZE, 0, (SOCKADDR*)&socketAddr, sizeof(SOCKADDR));
-			cout << "Send Message " << sendPkt->len << " Bytes!";
-			cout << " Flag:" << sendPkt->FLAG << " SEQ:" << sendPkt->seq;
-			cout << " checksum:" << sendPkt->checksum << endl;
 
 			state = 2;  // 转状态2
 			break;
 
 		case 2:  // LAST_ACK
 			err = recvfrom(socketServer, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &fromLen);
-			if (err >= 0) {
+			if (err > 0) {
 				if (recvPkt->FLAG & 0x4) {  // ACK=1
 					printTime();
 					cout << "收到了来自客户端第四次挥手的ACK数据包..." << endl;
@@ -195,8 +209,9 @@ void disconnect() {  // 参考 <https://blog.csdn.net/LOOKTOMMER/article/details/1
 }
 
 void saveFile() {
-	// ofstream fout("C:/Users/new/Desktop/out.md", ios::binary | ios::out);
-	ofstream fout("C:/Users/new/Desktop/out.pdf", ios::binary | ios::out);
+	string filePath = "C:/Users/new/Desktop/";  // 保存路径
+	for (int i = 0; fileName[i]; i++)filePath += fileName[i];
+	ofstream fout(filePath, ios::binary | ios::out);
 
 	fout.write(fileBuffer, fileSize); // 这里还是size,如果使用string.data或c_str的话图片不显示，经典深拷贝问题
 	fout.close();
@@ -215,65 +230,67 @@ void receiveFile() {
 		switch (state) {
 		case 0:  // 等待文件头状态
 			err = recvfrom(socketServer, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &fromLen);
-			if (err >= 0) {
-				cout << "Recieve Message " << recvPkt->len << " Bytes!";
-				cout << " Flag:" << recvPkt->FLAG << " SEQ:" << recvPkt->seq;
-				cout << " checksum:" << recvPkt->checksum << endl;
-				if (isCorrupt(recvPkt)) {  // 检测出数据包损坏
-					printTime();
-					cout << "收到一个损坏的数据包，向发送端发送 ack=" << waitSeq << " 数据包" << endl;
-					
-					state = 2;
-					break;
-				}
-				if (recvPkt->FLAG & 0x8) {  // HEAD=1
-					fileSize = recvPkt->len;
-					fileBuffer = new char[fileSize];
-					filePath = new char[128];
-					memcpy(filePath, recvPkt->data, strlen(recvPkt->data) + 1);
+			if (err > 0) {
+				printReceivePacketMessage(sendPkt);
+				if (err > 0) {
+					if (isCorrupt(recvPkt)) {  // 检测出数据包损坏
+						printTime();
+						cout << "收到一个损坏的数据包，向发送端发送 ack=" << waitSeq << " 数据包" << endl;
 
-					printTime();
-					cout << "收到来自发送端的文件头数据包，文件名为：" << filePath << "。 文件大小为：" << fileSize << "，等待发送文件数据包..." << endl;
-				
-					waitSeq++;
-					state = 2;
-				}
-				else {
-					printTime();
-					cout << "收到的数据包不是文件头，等待发送端重传..." << endl;
+						state = 2;
+						break;
+					}
+					if (recvPkt->FLAG & 0x8) {  // HEAD=1
+						fileSize = recvPkt->len;
+						fileBuffer = new char[fileSize];
+						fileName = new char[128];
+						memcpy(fileName, recvPkt->data, strlen(recvPkt->data) + 1);
+						packetNum = fileSize % PACKET_LENGTH ? fileSize / PACKET_LENGTH + 1 : fileSize / PACKET_LENGTH;
+
+						printTime();
+						cout << "收到来自发送端的文件头数据包，文件名为: " << fileName;
+						cout << "。文件大小为: " << fileSize << " Bytes，总共需要接收 " << packetNum << " 个数据包";
+						cout << "，等待发送文件数据包..." << endl << endl;
+
+						waitSeq++;
+						state = 2;
+					}
+					else {
+						printTime();
+						cout << "收到的数据包不是文件头，等待发送端重传..." << endl;
+					}
 				}
 			}
 			break;
 
 		case 1:  // 等待文件数据包状态
 			err = recvfrom(socketServer, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &fromLen);
-			if (err >= 0) {
+			if (err > 0) {
+				printReceivePacketMessage(recvPkt);
 				if (isCorrupt(recvPkt)) {  // 检测出数据包损坏
 					printTime();
-					cout << "收到一个损坏的数据包，向发送端发送 ack=" << waitSeq << " 数据包" << endl;
+					cout << "收到一个损坏的数据包，向发送端发送 ack=" << waitSeq << " 数据包" << endl << endl;
 					state = 2;
 					break;
 				}
 				if (recvPkt->seq == waitSeq) {  // 收到了目前等待的包
-					double number = rand() % 10 + 1;  // 自己设置丢包率
-					if (number >= 1.5) {
-						cout << "Recieve Message " << recvPkt->len << " Bytes!";
-						cout << " Flag:" << recvPkt->FLAG << " SEQ:" << recvPkt->seq;
-						cout << " checksum:" << recvPkt->checksum << endl;
-
+					if (randomNumber(randomEngine) >= 0.02) {
 						memcpy(fileBuffer + recvSize, recvPkt->data, recvPkt->len);
 						recvSize += recvPkt->len;
 
 						printTime();
-						cout << "收到第 " << recvPkt->seq << " 号数据包，向发送端发送 ack=" << waitSeq << endl;
+						cout << "收到第 " << recvPkt->seq << " 号数据包，向发送端发送 ack=" << waitSeq << endl << endl;
 
 						waitSeq++;
 						state = 2;
 					}
+					else {
+						cout << "主动丢包" << endl;
+					}
 				}
 				else {  // 不是目前等待的数据包
 					printTime();
-					cout << "收到第 " << recvPkt->seq << " 号数据包，但并不是需要的数据包，向发送端发送 ack=" << waitSeq << endl;
+					cout << "收到第 " << recvPkt->seq << " 号数据包，但并不是需要的数据包，向发送端发送 ack=" << waitSeq << endl << endl;
 				}
 			}
 
@@ -296,7 +313,7 @@ void receiveFile() {
 
 		case 3:  // 文件已接收完毕，等待发送端发送断连请求
 			err = recvfrom(socketServer, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &fromLen);
-			if (err >= 0) {
+			if (err > 0) {
 				if (recvPkt->FLAG & 0x1) {  // FIN=1
 					flag = 0;
 					disconnect();

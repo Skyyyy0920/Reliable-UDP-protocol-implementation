@@ -11,7 +11,7 @@ SOCKADDR_IN socketAddr;  // 服务器地址
 SOCKET socketClient;  // 客户端套接字
 
 stringstream ss;
-SYSTEMTIME sysTime = { 0 };  // 系统时间
+SYSTEMTIME sysTime = { 0 };
 void printTime() {  // 打印系统时间
 	ss.clear();
 	ss.str("");
@@ -20,12 +20,29 @@ void printTime() {  // 打印系统时间
 	cout << ss.str();
 }
 
+void printPacketMessage(Packet* pkt) {  // 打印数据包信息 
+	cout << "Packet size=" << pkt->len << " Bytes!  FLAG=" << pkt->FLAG;
+	cout << " seqNumber=" << pkt->seq << " ackNumber=" << pkt->ack;
+	cout << " checksum=" << pkt->checksum << " windowLength=" << pkt->window << endl;
+}
+
+void printSendPacketMessage(Packet* pkt) {
+	cout << "[Send Packet's information]";
+	printPacketMessage(pkt);
+}
+
+void printReceivePacketMessage(Packet* pkt) {
+	cout << "[Receive Packet's information]";
+	printPacketMessage(pkt);
+}
+
 int fromLen = sizeof(SOCKADDR);
 int packetNum;  // 发送数据包的数量
 int fileSize;  // 文件大小
 int sendSeq;  // 发送数据包序列号
 int err;  // socket错误提示
 char* filePath;
+char* fileName;
 char* fileBuffer;
 
 void initSocket() {
@@ -63,7 +80,6 @@ void connect() {
 			// 第一次握手，向服务器发送SYN=1的数据包，服务器收到后会回应SYN, ACK=1的数据包
 			sendPkt->setSYN();
 			sendto(socketClient, (char*)sendPkt, BUFFER_SIZE, 0, (SOCKADDR*)&socketAddr, sizeof(SOCKADDR));
-			cout << socketAddr.sin_port << endl;
 			state = 1;  // 转状态1
 			break;
 
@@ -77,7 +93,6 @@ void connect() {
 					// 第三次握手，向服务器发送ACK=1的数据包，告知服务器自己接收能力正常
 					sendPkt->setACK();
 					sendto(socketClient, (char*)sendPkt, BUFFER_SIZE, 0, (SOCKADDR*)&socketAddr, sizeof(SOCKADDR));
-					cout << socketAddr.sin_port << endl;
 					state = 2;  // 转状态2
 				}
 				else {
@@ -123,9 +138,6 @@ void disconnect() {  // 参考 <https://blog.csdn.net/LOOKTOMMER/article/details/1
 		case 1:  // FIN_WAIT_1
 			err = recvfrom(socketClient, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &fromLen);
 			if (err >= 0) {
-				cout << "Recieve Message " << recvPkt->len << " Bytes!";
-				cout << " Flag:" << recvPkt->FLAG << " SEQ:" << recvPkt->seq;
-				cout << " checksum:" << recvPkt->checksum << endl;
 				if (recvPkt->FLAG & 0x4) {  // ACK=1
 					printTime();
 					cout << "收到了来自服务器第二次挥手ACK数据包..." << endl;
@@ -142,9 +154,6 @@ void disconnect() {  // 参考 <https://blog.csdn.net/LOOKTOMMER/article/details/1
 		case 2:  // FIN_WAIT_2
 			err = recvfrom(socketClient, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &fromLen);
 			if (err >= 0) {
-				cout << "Recieve Message " << recvPkt->len << " Bytes!";
-				cout << " Flag:" << recvPkt->FLAG << " SEQ:" << recvPkt->seq;
-				cout << " checksum:" << recvPkt->checksum << endl;
 				if ((recvPkt->FLAG & 0x1) && (recvPkt->FLAG & 0x4)) {  // ACK=1, FIN=1
 					printTime();
 					cout << "收到了来自服务器第三次挥手FIN&ACK数据包，开始第四次挥手，向服务器发送ACK=1的数据包..." << endl;
@@ -179,9 +188,7 @@ void sendPacket(Packet* sendPkt) {
 	Packet* recvPkt = new Packet;
 
 	// 检查一下文件的各个内容
-	cout << "Send Message " << sendPkt->len << " Bytes!";
-	cout << " Flag:" << sendPkt->FLAG << " SEQ:" << sendPkt->seq;
-	cout << " checksum:" << sendPkt->checksum << endl;
+	printSendPacketMessage(sendPkt);
 	err = sendto(socketClient, (char*)sendPkt, BUFFER_SIZE, 0, (SOCKADDR*)&socketAddr, sizeof(SOCKADDR));
 	if (err == SOCKET_ERROR) {
 		cout << "sendto failed with error: " << WSAGetLastError() << endl;
@@ -202,9 +209,6 @@ void sendPacket(Packet* sendPkt) {
 				start = clock(); // 重设开始时间
 			}
 		}
-		// cout << "Recieve Message " << recvPkt->len << " Bytes!";
-		// cout << " Flag:" << recvPkt->FLAG << " SEQ:" << recvPkt->seq << " ACK:" << recvPkt->ack;
-		// cout << " checksum:" << recvPkt->checksum << endl;
 
 		// 三个条件要同时满足，这里调试时判断用packet的seq
 		if ((recvPkt->FLAG & 0x4) && (recvPkt->ack == sendPkt->seq)) {
@@ -223,8 +227,8 @@ void readFile() {
 	}
 	f.seekg(0, std::ios_base::end);  // 将文件流指针定位到流的末尾
 	fileSize = f.tellg();
-	packetNum = fileSize / PACKET_LENGTH + 1;
-	cout << "文件大小为 " << fileSize << " Bytes，总共要发送 " << packetNum << " 个数据包" << endl;
+	packetNum = fileSize % PACKET_LENGTH ? fileSize / PACKET_LENGTH + 1 : fileSize / PACKET_LENGTH;  // 解决了一个小bug，之前直接+1的话，如果是1024的整数倍，会多切出一个包来，所以这里要判断一下
+	cout << "文件大小为 " << fileSize << " Bytes，总共要发送 " << packetNum + 1 << " 个数据包" << endl << endl;
 	f.seekg(0, std::ios_base::beg);  // 将文件流指针重新定位到流的开始
 	fileBuffer = new char[fileSize];
 	f.read(fileBuffer, fileSize);
@@ -237,12 +241,15 @@ void sendFile() {
 	
 	// 先发一个记录文件名的数据包，并设置HEAD标志位为1，表示开始文件传输
 	Packet* headPkt = new Packet;
-	// headPkt->fillData(filePath, strlen(filePath));
-	headPkt->setHEAD(sendSeq, fileSize, filePath);
+	printTime();
+	cout << "发送文件头数据包..." << endl;
+	headPkt->setHEAD(sendSeq, fileSize, fileName);
 	headPkt->checksum = checksum((uint32_t*)headPkt);
 	sendPacket(headPkt);
 
 	// 开始发送装载文件的数据包
+	printTime();
+	cout << "开始发送文件数据包..." << endl;
 	Packet* sendPkt = new Packet;
 	for (int i = 0; i < packetNum; i++) {
 		if (i == packetNum - 1) {  // 最后一个包
@@ -273,14 +280,17 @@ int main() {
 	connect();
 
 	// 读取文件
-	cout << "请输入您要传输的文件名：";  
-	// C:\Users\new\Desktop\Tree-Hole\readme.md
-	// C:\Users\new\Desktop\GRE填空机经1100题难度分级版（第二版）.pdf
-	// C:\Users\new\Desktop\helloword.txt
-
+	cout << "请输入您要传输的文件名(包括文件类型后缀)：";
+	fileName = new char[128];
+	cin >> fileName;
+	cout << "请输入您要传输的文件所在路径(绝对路径)：";
 	filePath = new char[128];
 	cin >> filePath;
 	readFile();
+	// C:\\Users\\new\\Desktop\\Tree-Hole\\readme.md
+	// C:\Users\new\Desktop\GRE填空机经1100题难度分级版（第二版）.pdf
+	// C:\\Users\\new\\Desktop\\test\\1.jpg
+	// C:\\Users\new\\Desktop\\test\\helloworld.txt
 
 	// 开始发送文件
 	sendFile();

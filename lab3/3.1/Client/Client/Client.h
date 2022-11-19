@@ -88,8 +88,8 @@ void Packet::setTAIL() {
 
 void Packet::fillData(int seq, int size, char* data) {
 	// 将文件数据填入数据包data变量
-	this->len = size;
 	this->seq = seq;
+	this->len = size;
 	memcpy(this->data, data, size);
 }
 

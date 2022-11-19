@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <vector>
 #include <sstream>
+#include <random>
 using namespace std;
 
 #endif
