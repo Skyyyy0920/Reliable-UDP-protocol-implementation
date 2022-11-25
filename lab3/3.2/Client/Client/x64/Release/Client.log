@@ -1,0 +1,9 @@
+﻿  Client.cpp
+F:\All assignments during college\Junior(first semester)\Computer Network\Computer-Network\lab3\3.2\Client\Client\Client.cpp(268,20): warning C4244: “=”: 从“std::streamoff”转换到“unsigned int”，可能丢失数据
+F:\All assignments during college\Junior(first semester)\Computer Network\Computer-Network\lab3\3.2\Client\Client\Client.cpp(310,55): warning C4244: “参数”: 从“double”转换到“UINT”，可能丢失数据
+F:\All assignments during college\Junior(first semester)\Computer Network\Computer-Network\lab3\3.2\Client\Client\Client.cpp(310,45): warning C4244: “=”: 从“UINT_PTR”转换到“int”，可能丢失数据
+  正在生成代码
+  Previous IPDB not found, fall back to full compilation.
+  All 228 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  已完成代码的生成
+  Client.vcxproj -> F:\All assignments during college\Junior(first semester)\Computer Network\Computer-Network\lab3\3.2\Client\x64\Release\Client.exe
