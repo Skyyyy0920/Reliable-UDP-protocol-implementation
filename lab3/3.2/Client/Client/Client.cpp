@@ -4,7 +4,7 @@
 #define SERVER_PORT 920
 #define DATA_AREA_SIZE 1024
 #define BUFFER_SIZE sizeof(Packet)  // 缓冲区大小
-#define TIME_OUT 0.3 * CLOCKS_PER_SEC  // 超时重传，这里暂时设为0.3s
+#define TIME_OUT 0.2 * CLOCKS_PER_SEC  // 超时重传，这里暂时设为0.2s
 #define WINDOW_SIZE 16  // 滑动窗口大小
 
 SOCKADDR_IN socketAddr;  // 服务器地址
