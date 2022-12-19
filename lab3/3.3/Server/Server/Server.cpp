@@ -219,7 +219,7 @@ void saveFile() {
 	for (int i = 0; fileName[i]; i++)filePath += fileName[i];
 	ofstream fout(filePath, ios::binary | ios::out);
 
-	fout.write(fileBuffer, fileSize); // 这里还是size,如果使用string.data或c_str的话图片不显示，经典深拷贝问题
+	fout.write(fileBuffer, fileSize);  // 这里还是size,如果使用string.data或c_str的话图片不显示，经典深拷贝问题
 	fout.close();
 }
 

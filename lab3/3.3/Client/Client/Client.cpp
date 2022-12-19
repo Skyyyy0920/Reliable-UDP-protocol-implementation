@@ -4,7 +4,7 @@
 #define SERVER_PORT 920
 #define DATA_AREA_SIZE 1024
 #define BUFFER_SIZE sizeof(Packet)  // 缓冲区大小
-#define TIME_OUT 0.2 * CLOCKS_PER_SEC  // 超时重传，这里暂时设为0.2s
+#define TIME_OUT 0.5 * CLOCKS_PER_SEC  // 超时重传，这里暂时设为2s
 #define WINDOW_SIZE 16  // 滑动窗口大小
 
 SOCKADDR_IN socketAddr;  // 服务器地址
@@ -22,6 +22,9 @@ char* fileName;  // 文件名
 char* fileBuffer;  // 这个设计其实不好，一股脑把文件全部读入缓冲区，如果文件太大可能内存超限
 char** selectiveRepeatBuffer;  // 选择重传缓冲区
 
+HANDLE hThread[2];  // 收发使用不同线程
+mutex mutexLock;  // 互斥锁
+
 /*
 * 计时器SetTimer的返回值，即Timer的ID。
 * 当窗口句柄为NULL时，系统会随机分配ID，因此如果该数组某个元素不为0，
@@ -31,6 +34,7 @@ char** selectiveRepeatBuffer;  // 选择重传缓冲区
 * (2)标识一个分组有没有对应的计时器，如果有(即数组元素不为0)，说明该分组未被ack
 */
 int timerID[WINDOW_SIZE];
+MSG msg;  // timer消息
 
 stringstream ss;
 SYSTEMTIME sysTime = { 0 };
@@ -230,13 +234,13 @@ void resendPacket(HWND hwnd, UINT uMsg, UINT idEvent, DWORD dwTime) {  // 重传函
 	sendPacket(resendPkt);
 	printSendPacketMessage(resendPkt);
 	cout << endl;
-	// timerID[seq - sendBase] = SetTimer(NULL, 0, TIME_OUT, (TIMERPROC)resendPacket);  // 重设Timer
 }
 
 void ackHandler(unsigned int ack) { // 处理来自接收端的ACK
 	// cout << endl << "ack " << ack << endl << endl;
 	if (ack >= sendBase && ack < sendBase + WINDOW_SIZE) {  // 如果ack分组序号在窗口内
-		// cout << "KillTimer " << timerID[ack - sendBase] << endl << endl;
+		mutexLock.lock();  // 加锁
+		// cout << "KillTimer " << timerID[ack - sendBase] << ack << sendBase << endl << endl;
 		KillTimer(NULL, timerID[ack - sendBase]);
 		timerID[ack - sendBase] = 0;  // timerID置零
 
@@ -252,9 +256,10 @@ void ackHandler(unsigned int ack) { // 处理来自接收端的ACK
 				memcpy(selectiveRepeatBuffer[i], selectiveRepeatBuffer[i + offset], sizeof(Packet));  // 缓冲区也要平移
 			}
 			for (int i = WINDOW_SIZE - offset; i < WINDOW_SIZE; i++) {
-				timerID[i] = 0;  // 这里一开始没想到，可能出现的bug是这样的，窗口内除了recvBase都收到了，再收到的recvBase的ack，这时offset就等于窗口大小，那么上一个循环将不会执行，那些值也不会置零了
+				timerID[i] = -1;  // 状态-1表示目前对应位置没有数据包被发出, 状态0表示对应位置数据包已发送并被ACK
 			}
 		}
+		mutexLock.unlock();  // 解锁
 	}
 }
 
@@ -274,11 +279,12 @@ void readFile() {  // 这个设计其实不好，一股脑把文件全部读入缓冲区，如果文件太大
 	f.close();
 }
 
-void sendFile() {
+DWORD WINAPI send(LPVOID lparam) {
 	sendBase = 0;
 	nextSeqNum = 0;
 	selectiveRepeatBuffer = new char* [WINDOW_SIZE];
 	for (int i = 0; i < WINDOW_SIZE; i++)selectiveRepeatBuffer[i] = new char[sizeof(Packet)];  // char[32][1048]
+	for (int i = 0; i < WINDOW_SIZE; i++)timerID[i] = -1;  // 双线程启动的时候会有一些同步的问题，这里先设为-1区别一下
 	clock_t start = clock();
 	
 	// 先发一个记录文件名的数据包，并设置HEAD标志位为1，表示开始文件传输
@@ -287,13 +293,17 @@ void sendFile() {
 	cout << "发送文件头数据包..." << endl;
 	headPkt->setHEAD(0, fileSize, fileName);
 	headPkt->checksum = checksum((uint32_t*)headPkt);
-	sendPacket(headPkt);  // 这里还没有实现文件头的缺失重传机制
+	printSendPacketMessage(headPkt);  // 检查一下文件的各个内容
+	cout << endl;
+	err = sendto(socketClient, (char*)headPkt, BUFFER_SIZE, 0, (SOCKADDR*)&socketAddr, sizeof(SOCKADDR));
+	if (err == SOCKET_ERROR) {  // 这里没有实现文件头的缺失重传机制
+		cout << "Send Packet failed with ERROR: " << WSAGetLastError() << endl;
+	}
 
 	// 开始发送装载文件的数据包
 	printTime();
-	cout << "开始发送文件数据包..." << endl;
+	cout << endl << "开始发送文件数据包..." << endl;
 	Packet* sendPkt = new Packet;
-	Packet* recvPkt = new Packet;
 	while (sendBase < packetNum) {
 		while (nextSeqNum < sendBase + WINDOW_SIZE && nextSeqNum < packetNum) {  // 只要下一个要发送的分组序号还在窗口内，就继续发
 			if (nextSeqNum == packetNum - 1) {  // 如果是最后一个包
@@ -307,21 +317,14 @@ void sendFile() {
 			}
 			memcpy(selectiveRepeatBuffer[nextSeqNum - sendBase], sendPkt, sizeof(Packet));  // 存入缓冲区
 			sendPacket(sendPkt);
+			mutexLock.lock();
 			timerID[nextSeqNum - sendBase] = SetTimer(NULL, 0, TIME_OUT, (TIMERPROC)resendPacket);  // 启动计时器，这里nIDEvent=0，是因为窗口句柄设为NULL的情况下这里填什么都无所谓，反正它会重新分配，返回值才是真正的nIDEvent
 			nextSeqNum++;
+			mutexLock.unlock();
+
 			Sleep(10);  // 睡眠10ms，包与包之间有一定的时间间隔
 		}
 
-		// 如果当前发送窗口已经用光了，就进入接收ACK阶段
-		err = recvfrom(socketClient, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &socketAddrLen);
-		if (err > 0) {
-			printReceivePacketMessage(recvPkt);
-			ackHandler(recvPkt->ack);  // 处理ack
-		}
-
-		// 应该不能把监听消息的写在这里
-		MSG msg;
-		// GetMessage(&msg, NULL, 0, 0);  // 阻塞式，一开始用的这个，被坑了，他不得到消息不会结束，所以一定会触发重传
 		while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {  // 以查看的方式从系统中获取消息，可以不将消息从系统中移除，是非阻塞函数；当系统无消息时，返回FALSE，继续执行后续代码。
 			if (msg.message == WM_TIMER) {  // 定时器消息
 				DispatchMessage(&msg);
@@ -334,6 +337,21 @@ void sendFile() {
 	cout << "文件发送完毕，传输时间为：" << (end - start) / CLOCKS_PER_SEC << "s" << endl;
 	cout << "吞吐率为：" << ((float)fileSize) / ((end - start) / CLOCKS_PER_SEC) << " Bytes/s " << endl << endl;
 	cout << endl << "**************************************************************************************************" << endl << endl;
+
+	return 0;
+}
+
+DWORD WINAPI recv(LPVOID lparam) {
+	// 如果当前发送窗口已经用光了，就进入接收ACK阶段
+	while (sendBase < packetNum) {
+		Packet* recvPkt = new Packet;
+		err = recvfrom(socketClient, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &socketAddrLen);
+		if (err > 0) {
+			printReceivePacketMessage(recvPkt);
+			ackHandler(recvPkt->ack);  // 处理ack
+		}
+	}
+	return 0;
 }
 
 int main() {
@@ -351,14 +369,16 @@ int main() {
 	filePath = new char[128];
 	cin >> filePath;
 	readFile();
-	// C:\\Users\\new\\Desktop\\Tree-Hole\\readme.md
-	// C:\Users\new\Desktop\GRE填空机经1100题难度分级版（第二版）.pdf
 	// C:\\Users\\new\\Desktop\\test\\1.jpg
 	// C:\\Users\new\\Desktop\\test\\helloworld.txt
 
-	// 开始发送文件
-	sendFile();
-	
+	// 开辟收发线程
+	hThread[0] = CreateThread(NULL, 0, send, NULL, 0, NULL);
+	hThread[1] = CreateThread(NULL, 0, recv, NULL, 0, NULL);
+	WaitForMultipleObjects(2, hThread, TRUE, INFINITE);  // 等待收发线程全部结束才进行主线程
+	CloseHandle(hThread[0]);
+	CloseHandle(hThread[1]);
+
 	// 主动断开连接
 	disconnect();
 
@@ -375,3 +395,34 @@ int main() {
 	WSACleanup();
 	return 0;
 }
+
+/*
+void multithread_Reno(string filename, SOCKET& SendSocket, sockaddr_in& RecvAddr) {
+	// 每次文件发送预先初始化
+	Reno_init();
+
+	// 提前预备packet_num
+	ifstream fin(filename.c_str(), ifstream::binary);
+	fin.seekg(0, std::ifstream::end);
+	long size = fin.tellg();
+	file_size = size;
+	fin.seekg(0);
+	packet_num = size / DEFAULT_BUFLEN + 1;
+
+	// 创建参数结构体
+	Send_params temp_send(filename, SendSocket, RecvAddr);
+	Recv_params temp_recv(SendSocket, RecvAddr);
+
+	//----------------------
+	// 创建三个线程，一个接受线程，一个发送线程
+	HANDLE hThread[2];
+	hThread[0] = CreateThread(NULL, 0, Send, (LPVOID)&temp_send, 0, NULL);
+	hThread[1] = CreateThread(NULL, 0, Recv, (LPVOID)&temp_recv, 0, NULL);
+	// hThread[2] = CreateThread(NULL, 0, Timer, (LPVOID)&temp_recv, 0, NULL);
+
+	WaitForMultipleObjects(2, hThread, TRUE, INFINITE);
+	CloseHandle(hThread[0]);
+	CloseHandle(hThread[1]);
+	// CloseHandle(hThread[2]);
+}
+*/

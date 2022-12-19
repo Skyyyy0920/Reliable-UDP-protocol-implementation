@@ -1,5 +1,5 @@
 ﻿  Client.cpp
-F:\All assignments during college\Junior(first semester)\Computer Network\Computer-Network\lab3\3.2\Client\Client\Client.cpp(268,20): warning C4244: “=”: 从“std::streamoff”转换到“unsigned int”，可能丢失数据
-F:\All assignments during college\Junior(first semester)\Computer Network\Computer-Network\lab3\3.2\Client\Client\Client.cpp(310,55): warning C4244: “参数”: 从“double”转换到“UINT”，可能丢失数据
-F:\All assignments during college\Junior(first semester)\Computer Network\Computer-Network\lab3\3.2\Client\Client\Client.cpp(310,45): warning C4244: “=”: 从“UINT_PTR”转换到“int”，可能丢失数据
-  Client.vcxproj -> F:\All assignments during college\Junior(first semester)\Computer Network\Computer-Network\lab3\3.2\Client\x64\Debug\Client.exe
+D:\C++ Projects\Client\Client\Client.cpp(273,20): warning C4244: “=”: 从“std::streamoff”转换到“unsigned int”，可能丢失数据
+D:\C++ Projects\Client\Client\Client.cpp(321,55): warning C4244: “参数”: 从“double”转换到“UINT”，可能丢失数据
+D:\C++ Projects\Client\Client\Client.cpp(321,45): warning C4244: “=”: 从“UINT_PTR”转换到“int”，可能丢失数据
+  Client.vcxproj -> D:\C++ Projects\Client\x64\Debug\Client.exe
