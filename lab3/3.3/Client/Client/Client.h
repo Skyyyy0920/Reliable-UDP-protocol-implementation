@@ -21,7 +21,7 @@ public:
 	uint32_t len;  // 数据部分长度
 	uint32_t checksum;  // 校验和
 	uint32_t window;  // 窗口
-	char data[1024];  // 数据长度
+	char data[4096];  // 数据长度
 public:
 	Packet() : FLAG(0), seq(0), ack(0), len(0), checksum(0), window(0) { memset(data, 0, sizeof(data)); };
 	Packet(uint32_t FLAG, uint32_t seq, uint32_t ack, uint32_t len, uint32_t checksum, uint32_t window);

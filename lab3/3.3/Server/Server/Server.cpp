@@ -2,9 +2,9 @@
 
 #define SERVER_IP "127.0.0.1"  // 服务器IP地址 
 #define SERVER_PORT 920  // 服务器端口号
-#define DATA_AREA_SIZE 1024
+#define DATA_AREA_SIZE 4096
 #define BUFFER_SIZE sizeof(Packet)  // 缓冲区大小
-#define WINDOW_SIZE 16  // 滑动窗口大小
+#define WINDOW_SIZE 32  // 滑动窗口大小
 
 SOCKADDR_IN socketAddr;  // 服务器地址
 SOCKET socketServer;  // 服务器套接字
@@ -256,7 +256,7 @@ void receiveFile() {
 				packetNum = fileSize % DATA_AREA_SIZE ? fileSize / DATA_AREA_SIZE + 1 : fileSize / DATA_AREA_SIZE;
 
 				cout << "收到来自发送端的文件头数据包，文件名为: " << fileName;
-				cout << "。文件大小为: " << fileSize << " Bytes，总共需要接收 " << packetNum << " 个数据包";
+				cout << "。文件大小为: " << fileSize << " Bytes，总共需要接收 " << packetNum + 1 << " 个数据包";
 				cout << "，等待发送文件数据包..." << endl << endl;
 
 				flag = 0;  // 跳出等待接收文件头的循环

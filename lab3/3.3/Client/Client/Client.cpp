@@ -2,10 +2,10 @@
 
 #define SERVER_IP "127.0.0.1"  // 服务器的IP地址
 #define SERVER_PORT 920
-#define DATA_AREA_SIZE 1024
+#define DATA_AREA_SIZE 4096
 #define BUFFER_SIZE sizeof(Packet)  // 缓冲区大小
-#define TIME_OUT 0.5 * CLOCKS_PER_SEC  // 超时重传，这里暂时设为2s
-#define WINDOW_SIZE 16  // 滑动窗口大小
+#define TIME_OUT 0.2 * CLOCKS_PER_SEC  // 超时重传, 设置为0.2s
+#define WINDOW_SIZE 32  // 滑动窗口大小
 
 SOCKADDR_IN socketAddr;  // 服务器地址
 SOCKET socketClient;  // 客户端套接字
@@ -36,6 +36,19 @@ mutex mutexLock;  // 互斥锁
 int timerID[WINDOW_SIZE];
 MSG msg;  // timer消息
 
+enum State
+{
+	SLOW_START,  // 慢启动
+	CONGESTION_AVOIDANCE,  // 拥塞避免
+	FAST_RECOVERY  // 快速恢复
+};
+int state = SLOW_START;
+int cwnd = 1;
+int recv_window = 2560; // 根据接收端的缓冲区计算得，每次接收到ACK -1
+int ssthresh = 16;  // 阈值
+int duplicateACKCount = 0;
+int cwndFlag = 0;
+
 stringstream ss;
 SYSTEMTIME sysTime = { 0 };
 void printTime() {  // 打印系统时间
@@ -64,7 +77,7 @@ void printReceivePacketMessage(Packet* pkt) {
 }
 
 void printWindow() {
-	cout << "  当前发送窗口: [" << sendBase << ", " << sendBase + WINDOW_SIZE - 1 << "]";
+	cout << "  当前发送窗口: [" << sendBase << ", " << sendBase + min(cwnd, WINDOW_SIZE) - 1 << "]";
 	cout << endl;
 }
 
@@ -220,8 +233,9 @@ void sendPacket(Packet* sendPkt) {  // 封装了一下发送数据包的过程
 
 void resendPacket(HWND hwnd, UINT uMsg, UINT idEvent, DWORD dwTime) {  // 重传函数
 	// cout << endl << "resend" << " Timer ID " << idEvent << endl << endl;
+	// mutexLock.lock();  这里还不能加锁, 会有死锁问题
 	unsigned int seq = 0;
-	for (int i = 0; i < WINDOW_SIZE; i++) {  // 找到是哪个Timer超时了
+	for (int i = 0; i < min(cwnd, WINDOW_SIZE); i++) {  // 找到是哪个Timer超时了
 		if (timerID[i] == idEvent && timerID[i] != 0) {
 			seq = i + sendBase;
 			break;
@@ -232,15 +246,50 @@ void resendPacket(HWND hwnd, UINT uMsg, UINT idEvent, DWORD dwTime) {  // 重传函
 	Packet* resendPkt = new Packet;
 	memcpy(resendPkt, selectiveRepeatBuffer[seq - sendBase], sizeof(Packet));  // 从缓冲区直接取出来
 	sendPacket(resendPkt);
-	printSendPacketMessage(resendPkt);
+	cout << endl;
+
+	ssthresh = cwnd / 2 == 0 ? 1 : cwnd / 2;  // 保证最小为1
+	cwnd = 1;
+	state = SLOW_START;  // 有超时就回到慢启动状态
+	cout << "======================== 回到慢启动阶段 =========================" << endl;
+	// mutexLock.unlock();
+}
+
+void fastRetransmission(unsigned int seq) {  // 快速重传
+	cout << "[快速重传]";
+	Packet* sendPkt = new Packet;
+	memcpy(sendPkt, selectiveRepeatBuffer[seq - sendBase], sizeof(Packet));  // 从缓冲区直接取出来
+	sendPacket(sendPkt);
 	cout << endl;
 }
 
-void ackHandler(unsigned int ack) { // 处理来自接收端的ACK
-	// cout << endl << "ack " << ack << endl << endl;
-	if (ack >= sendBase && ack < sendBase + WINDOW_SIZE) {  // 如果ack分组序号在窗口内
-		mutexLock.lock();  // 加锁
-		// cout << "KillTimer " << timerID[ack - sendBase] << ack << sendBase << endl << endl;
+void ackHandler(unsigned int ack) {  // 处理来自接收端的ACK
+	/*
+	if (ack >= sendBase && (ack - sendBase) < min(cwnd, WINDOW_SIZE)) {  // 如果ack分组序号在窗口内
+		cout << "KillTimer " << timerID[ack - sendBase] << " ack=" << ack << " sendbase=" << sendBase << endl << endl;
+		KillTimer(NULL, timerID[ack - sendBase]);
+		timerID[ack - sendBase] = 0;  // timerID置零
+
+		if (ack == sendBase) {  // 如果恰好=sendBase，那么sendBase移动到具有最小序号的未确认分组处
+			for (int i = 0; i < min(cwnd, WINDOW_SIZE); i++) {
+				if (timerID[i]) break;  // 遇到一个有计时器的停下来(如果当前timerID数组元素不为0，说明有计时器在使用)
+				sendBase++;  // sendBase后移
+			}
+			int offset = sendBase - ack;
+			for (int i = 0; i < min(cwnd, WINDOW_SIZE) - offset; i++) {
+				timerID[i] = timerID[i + offset];  // timerID也得平移，不然对不上了
+				timerID[i + offset] = -1;
+				memcpy(selectiveRepeatBuffer[i], selectiveRepeatBuffer[i + offset], sizeof(Packet));  // 缓冲区也要平移
+			}
+			for (int i = min(cwnd, WINDOW_SIZE) - offset; i < min(cwnd, WINDOW_SIZE); i++) {
+				timerID[i] = -1;  // 状态-1表示目前对应位置没有数据包被发出, 状态0表示对应位置数据包已发送并被ACK
+			}
+		}
+	}
+	*/
+
+	if (ack >= sendBase && (ack - sendBase) < WINDOW_SIZE) {  // 如果ack分组序号在窗口内
+		cout << "KillTimer " << timerID[ack - sendBase] << " ack=" << ack << " sendbase=" << sendBase << endl << endl;
 		KillTimer(NULL, timerID[ack - sendBase]);
 		timerID[ack - sendBase] = 0;  // timerID置零
 
@@ -252,14 +301,13 @@ void ackHandler(unsigned int ack) { // 处理来自接收端的ACK
 			int offset = sendBase - ack;
 			for (int i = 0; i < WINDOW_SIZE - offset; i++) {
 				timerID[i] = timerID[i + offset];  // timerID也得平移，不然对不上了
-				timerID[i + offset] = 0;
+				timerID[i + offset] = -1;
 				memcpy(selectiveRepeatBuffer[i], selectiveRepeatBuffer[i + offset], sizeof(Packet));  // 缓冲区也要平移
 			}
 			for (int i = WINDOW_SIZE - offset; i < WINDOW_SIZE; i++) {
 				timerID[i] = -1;  // 状态-1表示目前对应位置没有数据包被发出, 状态0表示对应位置数据包已发送并被ACK
 			}
 		}
-		mutexLock.unlock();  // 解锁
 	}
 }
 
@@ -305,7 +353,8 @@ DWORD WINAPI send(LPVOID lparam) {
 	cout << endl << "开始发送文件数据包..." << endl;
 	Packet* sendPkt = new Packet;
 	while (sendBase < packetNum) {
-		while (nextSeqNum < sendBase + WINDOW_SIZE && nextSeqNum < packetNum) {  // 只要下一个要发送的分组序号还在窗口内，就继续发
+		mutexLock.lock();
+		while (nextSeqNum < sendBase + min(cwnd, WINDOW_SIZE) && nextSeqNum < packetNum) {  // 只要下一个要发送的分组序号还在窗口内，就继续发
 			if (nextSeqNum == packetNum - 1) {  // 如果是最后一个包
 				sendPkt->setTAIL();
 				sendPkt->fillData(nextSeqNum, fileSize - nextSeqNum * DATA_AREA_SIZE, fileBuffer + nextSeqNum * DATA_AREA_SIZE);
@@ -317,13 +366,14 @@ DWORD WINAPI send(LPVOID lparam) {
 			}
 			memcpy(selectiveRepeatBuffer[nextSeqNum - sendBase], sendPkt, sizeof(Packet));  // 存入缓冲区
 			sendPacket(sendPkt);
-			mutexLock.lock();
+			
 			timerID[nextSeqNum - sendBase] = SetTimer(NULL, 0, TIME_OUT, (TIMERPROC)resendPacket);  // 启动计时器，这里nIDEvent=0，是因为窗口句柄设为NULL的情况下这里填什么都无所谓，反正它会重新分配，返回值才是真正的nIDEvent
+			cout << "第 " << nextSeqNum << " 对应的timerID为 " << timerID[nextSeqNum - sendBase] << endl;
 			nextSeqNum++;
-			mutexLock.unlock();
 
 			Sleep(10);  // 睡眠10ms，包与包之间有一定的时间间隔
 		}
+		mutexLock.unlock();
 
 		while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {  // 以查看的方式从系统中获取消息，可以不将消息从系统中移除，是非阻塞函数；当系统无消息时，返回FALSE，继续执行后续代码。
 			if (msg.message == WM_TIMER) {  // 定时器消息
@@ -342,13 +392,99 @@ DWORD WINAPI send(LPVOID lparam) {
 }
 
 DWORD WINAPI recv(LPVOID lparam) {
-	// 如果当前发送窗口已经用光了，就进入接收ACK阶段
+	Packet* recvPkt = new Packet;
 	while (sendBase < packetNum) {
-		Packet* recvPkt = new Packet;
 		err = recvfrom(socketClient, (char*)recvPkt, BUFFER_SIZE, 0, (SOCKADDR*)&(socketAddr), &socketAddrLen);
 		if (err > 0) {
+			int ack = recvPkt->ack;
 			printReceivePacketMessage(recvPkt);
-			ackHandler(recvPkt->ack);  // 处理ack
+
+			mutexLock.lock();
+			switch (state) {
+			case SLOW_START:
+				cout << "======================== 慢启动阶段 =========================" << endl;
+				cout << "Send Window Size: " << min(cwnd, WINDOW_SIZE);
+				cout << " sendbase: " << sendBase;
+				cout << " ack; " << ack;
+				cout << " cwnd: " << cwnd << " ssthresh: " << ssthresh << endl;
+				if (ack >= sendBase && (ack - sendBase) < min(cwnd, WINDOW_SIZE)) {  // 在窗口内并且是一个还没收到的ACK
+					if (cwnd <= ssthresh) {
+						cwnd++;
+						cout << "************ 慢启动阶段接收到新的ACK, cwnd++ ************" << endl;
+					}
+					else {
+						state = CONGESTION_AVOIDANCE;
+						cout << "************ 慢启动阶段结束, 进入拥塞避免阶段 ************" << endl;
+					}
+
+					if (ack == sendBase) duplicateACKCount = 0;  // 收到sendBase的ACK, 置零
+					else duplicateACKCount++;
+
+					if (duplicateACKCount == 3) {  // 如果有三个ack都不是sendBase, 开始提前重传sendBase
+						cout << "************ 连续三个ack都不是sendBase, 开始提前重传 ************" << endl;
+						fastRetransmission(sendBase);
+						ssthresh = cwnd / 2 == 0 ? 1 : cwnd / 2;
+						cwnd = ssthresh + 3;
+						state = FAST_RECOVERY;
+						duplicateACKCount = 0;
+					}
+				}
+				break;
+
+			case CONGESTION_AVOIDANCE:
+				cout << "======================== 拥塞避免阶段 =========================" << endl;
+				cout << "Send Window Size: " << min(cwnd, WINDOW_SIZE);
+				cout << " sendbase: " << sendBase;
+				cout << " ack; " << ack;
+				cout << " cwnd: " << cwnd << " ssthresh: " << ssthresh << " cwndFlag: " << cwndFlag << endl;
+				if (ack >= sendBase && (ack - sendBase) < min(cwnd, WINDOW_SIZE)) {  // 在窗口内并且是一个还没收到的ACK
+					cwndFlag++;
+					// 这里设置cwnd或者给定值应该都可以，但是cwnd快
+					if (cwndFlag == cwnd) {
+						cwnd++;
+						cwndFlag = 0;
+						cout << "************ 拥塞避免阶段，cwnd线性递增1 ************" << endl;
+					}
+
+					if (ack == sendBase) duplicateACKCount = 0;  // 收到sendBase的ACK, 置零
+					else duplicateACKCount++;
+
+					if (duplicateACKCount == 3) {  // 如果有三个ack都不是sendBase, 开始提前重传sendBase
+						cout << "************ 连续三个ack都不是sendBase, 开始提前重传 ************" << endl;
+						fastRetransmission(sendBase);
+						ssthresh = cwnd / 2 == 0 ? 1 : cwnd / 2;
+						cwnd = ssthresh + 3;
+						state = FAST_RECOVERY;
+						duplicateACKCount = 0;
+					}
+				}
+				break;
+
+			case FAST_RECOVERY:
+				cout << "======================== 快速恢复阶段 =========================" << endl;
+				cout << "Send Window Size: " << min(cwnd, WINDOW_SIZE);
+				cout << " sendbase: " << sendBase;
+				cout << " ack; " << ack;
+				cout << " cwnd: " << cwnd << " ssthresh: " << ssthresh << endl;
+				if (ack >= sendBase && (ack - sendBase) < min(cwnd, WINDOW_SIZE)) {  // 在窗口内并且是一个还没收到的ACK
+					if (ack == sendBase) {
+						cwnd = ssthresh;
+						duplicateACKCount = 0;
+						state = CONGESTION_AVOIDANCE;
+					}
+					else {
+						cwnd++;
+					}
+				}
+				break;
+
+			default:
+				cout << "ERROR STATE!" << endl;
+				break;
+			}
+
+			ackHandler(ack);  //  处理ACK
+			mutexLock.unlock();
 		}
 	}
 	return 0;
@@ -370,6 +506,7 @@ int main() {
 	cin >> filePath;
 	readFile();
 	// C:\\Users\\new\\Desktop\\test\\1.jpg
+	// C:\\Users\\new\\Desktop\\test\\2.jpg
 	// C:\\Users\new\\Desktop\\test\\helloworld.txt
 
 	// 开辟收发线程
@@ -395,34 +532,3 @@ int main() {
 	WSACleanup();
 	return 0;
 }
-
-/*
-void multithread_Reno(string filename, SOCKET& SendSocket, sockaddr_in& RecvAddr) {
-	// 每次文件发送预先初始化
-	Reno_init();
-
-	// 提前预备packet_num
-	ifstream fin(filename.c_str(), ifstream::binary);
-	fin.seekg(0, std::ifstream::end);
-	long size = fin.tellg();
-	file_size = size;
-	fin.seekg(0);
-	packet_num = size / DEFAULT_BUFLEN + 1;
-
-	// 创建参数结构体
-	Send_params temp_send(filename, SendSocket, RecvAddr);
-	Recv_params temp_recv(SendSocket, RecvAddr);
-
-	//----------------------
-	// 创建三个线程，一个接受线程，一个发送线程
-	HANDLE hThread[2];
-	hThread[0] = CreateThread(NULL, 0, Send, (LPVOID)&temp_send, 0, NULL);
-	hThread[1] = CreateThread(NULL, 0, Recv, (LPVOID)&temp_recv, 0, NULL);
-	// hThread[2] = CreateThread(NULL, 0, Timer, (LPVOID)&temp_recv, 0, NULL);
-
-	WaitForMultipleObjects(2, hThread, TRUE, INFINITE);
-	CloseHandle(hThread[0]);
-	CloseHandle(hThread[1]);
-	// CloseHandle(hThread[2]);
-}
-*/
