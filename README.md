@@ -1,5 +1,5 @@
 # Computer-Network
-Course assignment of Computer Network (NKU, Autumn 2022)   
+Course assignment of Computer Network (NKU, Fall 2022)   
 Lectured by [Jingdong Xu](https://cc.nankai.edu.cn/2021/0323/c13619a490373/page.htm).
 
 ## Relevant Knowledge
